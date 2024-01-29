@@ -1,13 +1,14 @@
 /*
 AUTHOR: Micah Black, A2D Electronics
-DATE: Nov 15, 2023
-PURPOSE: This example prints out the voltage of all 4 channels every 1s.
+DATE: Jan 28, 2024
+PURPOSE: This example sets the current target on the eload
+		 and prints it out to make sure it was set properly.
 */
 
-#include "A2D_4CH_Isolated_ADC.h"
+#include "A2D_Eload.h"
 #include <Wire.h>
 
-A2D_4CH_Isolated_ADC adc = A2D_4CH_Isolated_ADC();
+A2D_Eload eload;
 
 void setup() {
 	Wire.begin();
@@ -15,22 +16,21 @@ void setup() {
 	
 	delay(2000); //delay to wait to start up serial monitor
 	
-	Serial.println("A2D 4CH Isolated ADC Test");
-	adc.init();
+	Serial.println("A2D Eload Current Setting Test");
+	
+	eload.init();
+	Serial.println("Initialization Complete");
+	
+	float current_target = 1.0;
+
+	eload.set_current_target(current_target);
+	Serial.print("Set Value: ");
+	Serial.print(current_target);
+
+	Serial.print(" Actual Value: ");
+	Serial.println(eload.get_current_target());
 }
 
 void loop() {
-	for(uint8_t ch = 0; ch < A2D_4CH_ISO_ADC_NUM_CHANNELS; ch++)
-	{
-		Serial.print("Ch ");
-		Serial.print(ch);
-		Serial.print("  At ADC: ");
-		Serial.print(adc.measure_raw_voltage(ch), 5);
-		Serial.print("V,  At Input: ");
-		Serial.print(adc.measure_voltage(ch), 5);
-		Serial.println("V");
-	}
-	Serial.println("----------------");
-	Serial.flush();
-	delay(500);
+	delay(1000);
 }

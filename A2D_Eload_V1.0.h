@@ -1,31 +1,54 @@
 //Board Description File for A2D_Sense_Board_V1.0 Board
 
-#include "MCP3425.h"
+//#include "MCP3425.h"
 #include "Arduino.h"
 
-//Valid I2C Address
-#define A2D_4CH_ISO_ADC_CH1_I2C_ADDR		0x68
-#define A2D_4CH_ISO_ADC_CH2_I2C_ADDR		0x69
-#define A2D_4CH_ISO_ADC_CH3_I2C_ADDR		0x6A
-#define A2D_4CH_ISO_ADC_CH4_I2C_ADDR		0x6B
+//I2C Address
+#define A2D_ELOAD_DAC_I2C_ADDR          0b1001000
 
-#define A2D_4CH_ISO_ADC_LED_PIN         	PC13
-#define A2D_4CH_ISO_ADC_LED_ON          	0
-#define A2D_4CH_ISO_ADC_LED_OFF         	1
+#define A2D_ELOAD_FAN_PIN               PB0
+#define A2D_ELOAD_FAN_ON                1
+#define A2D_ELOAD_FAN_OFF               0
 
-#define A2D_4CH_ISO_ADC_NUM_CHANNELS		4
-#define A2D_4CH_ISO_ADC_DEFAULT_RS485_ADDR	0
-#define A2D_4CH_ISO_ADC_BASE_RS485_ADDR		0
+#define A2D_ELOAD_RELAY_PIN             PB5
+#define A2D_ELOAD_RELAY_ON              1
+#define A2D_ELOAD_RELAY_OFF             0
 
-#define A2D_4CH_ISO_ADC_RS485_DE_PIN		PB1
+#define A2D_ELOAD_VSENSE_PIN            PA0
+#define A2D_ELOAD_ADC_FULL_SCALE        4096
+#define A2D_ELOAD_ADC_VREF              3.3
 
-#define A2D_4CH_ISO_ADC_CMD_SOURCE_USB		1
-#define A2D_4CH_ISO_ADC_CMD_SOURCE_RS485	2
+#define A2D_ELOAD_NTC_PIN               PA1
+#define A2D_ELOAD_NTC_TOP_RES           4700.0
+#define A2D_ELOAD_NTC_SERIES_RES        1000.0
+
+#define A2D_ELOAD_LED_PIN         	    PC13
+#define A2D_ELOAD_LED_ON          	    0
+#define A2D_ELOAD_LED_OFF         	    1
+
+#define A2D_ELOAD_DEFAULT_RS485_ADDR	0
+#define A2D_ELOAD_BASE_RS485_ADDR		0
+
+#define A2D_ELOAD_RS485_DE_PIN		    PB1
+#define A2D_ELOAD_RS485_TRANSMIT        1
+#define A2D_ELOAD_RS485_RECEIVE         0
+
+#define A2D_ELOAD_CMD_SOURCE_USB		1
+#define A2D_ELOAD_CMD_SOURCE_RS485	    2
 
 //scaling
-#define A2D_4CH_ISO_ADC_DEFAULT_V_SCALING   2.818181818 // (1.1k + 2k)/1.1k
-#define A2D_4CH_ISO_ADC_DEFAULT_V_OFFSET	0
+#define A2D_ELOAD_DEFAULT_V_SCALING     11.0 // (1k + 10k)/1k
+#define A2D_ELOAD_DEFAULT_V_OFFSET	    0.0
 
-#define A2D_4CH_ISO_ADC_EEPROM_INIT_VAL		0x55 //0b01010101
-#define A2D_4CH_ISO_ADC_SERIAL_CHAR_LEN		5 //4 characters in the serial number, +1 for the null string
-#define A2D_4CH_ISO_ADC_DEFAULT_SERIAL_NUM	"0000"
+#define A2D_ELOAD_DEFAULT_I_SCALING     2.0 //2.5V ref gives 5A output 1/(10mOhm * 50V/V Amp)
+#define A2D_ELOAD_DEFAULT_I_OFFSET      0.0
+#define A2D_ELOAD_MAX_CURRENT           5.0 //Amps
+
+//default Steinhart-Hart Constants for NXRT15XV103FA1B
+#define A2D_ELOAD_DEFAULT_TEMP_SHA      1.119349044e-3
+#define A2D_ELOAD_DEFAULT_TEMP_SHB      2.359019498e-4
+#define A2D_ELOAD_DEFAULT_TEMP_SHC      0.7926382169e-7
+
+#define A2D_ELOAD_EEPROM_INIT_VAL		0x55 //0b01010101
+#define A2D_ELOAD_SERIAL_CHAR_LEN		5 //4 characters in the serial number, +1 for the null string
+#define A2D_ELOAD_DEFAULT_SERIAL_NUM	"0000"
