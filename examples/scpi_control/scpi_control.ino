@@ -1,27 +1,24 @@
 /*
 AUTHOR: Micah Black, A2D Electronics
-DATE: Nov 16, 2023
+DATE: Feb 2, 2024
 PURPOSE: This example implements some SCPI commands
 		(that don't completely follow the susbystem style standard)
-		to communicate with the 4ch ADC board.
-CHANGELOG:
-	Jan 14, 2024: V1.0.1: Added RS485 communication with MEAS:VOLT command
-	Jan 21, 2024: Updated SCPI parsing and modified all commands with <CH> parameter to work with RS485 connection
+		to communicate with the A2D Eload board.
 */
 
-#include <A2D_4CH_Isolated_ADC.h>
+#include <A2D_Eload.h>
 
-// #define DEBUG //uncomment this line to add all debug printing statements
-// #define FORCE_EEPROM_REINIT //uncomment this line to force reinitialization of EEPROM (serial number, calibration, RS485 Address, etc.)
+#define SERIAL F("0001") //There seems to be a bug with Arduino IDE #ifdef, #ifndef, etc. need to hard-code the serial number
 
-#define MANUFACTURER ("A2D Electronics")
-#define MODEL ("4CH Isolated ADC")
-#define VERSION ("V1.0.1")
+//#define DEBUG //uncomment this line to add all debug printing statements
 
-// SERIAL DEFINES
+//#define FORCE_EEPROM_REINIT //uncomment this line to force reinitialization of EEPROM (serial number, calibration, RS485 Address, etc.)
+							//use this when the format of data storage in EEPROM has changed
+
+// SERIAL Settings
 #define BAUDRATE 115200
-#define SER_BUF_LEN 256
-#define CMD_BUF_LEN 32
+#define SER_BUF_LEN 60
+#define CMD_BUF_LEN 20
 #define END_CHAR '\n'
 #define NO_CMD ""
 
@@ -38,35 +35,42 @@ uint8_t parse_channel();
 bool parse_bool();
 float parse_float();
 bool channel_on_this_device(uint8_t channel);
-void parse_command(char ser_buf[], char command[], char *token, bool *is_query, bool from_rs485, uint8_t *rs485_addr);
+void parse_command(char ser_buf[], char command[], bool from_rs485);
 void pass_cmd_to_rs485(uint8_t rs485_addr);
 void wait_rs485_response_send_usb(char ser_buf[]);
 
 // Function Prototypes for SCPI handlers
 void scpi_handler_idn();
 void scpi_handler_rst();
-void scpi_handler_trg();
-void scpi_handler_instr_led();
-void scpi_handler_meas_volt();
-void scpi_handler_meas_volt_adc();
-void scpi_handler_cal_reset();
-void scpi_handler_cal_save();
-void scpi_handler_cal_volt();
-void scpi_handler_cal();
-void scpi_handler_instr_gain();
-void scpi_handler_instr_dr();
-void scpi_handler_instr_mode();
+
+void scpi_handler_send_1_bool(void (A2D_Eload::*func_to_call)(bool));
+void scpi_handler_read_1_bool(bool (A2D_Eload::*func_to_call)());
+void scpi_handler_read_1_float_ch(float (A2D_Eload::*func_to_call)());
+void scpi_handler_read_2_float_ch(float (A2D_Eload::*func_to_call_1)(), float (A2D_Eload::*func_to_call_2)());
+void scpi_handler_no_arg_no_return_ch(void (A2D_Eload::*func_to_call)());
+void scpi_handler_send_4_float(void (A2D_Eload::*func_to_call)(float, float, float, float));
+
+void scpi_handler_curr();
+
 void scpi_handler_instr_rs485_set();
 void scpi_handler_instr_rs485();
 void scpi_handler_instr_rs485_save();
 
+// Function prototypes for control
+void fan_temp_control();
+void output_watchdog();
+void output_24v_test();
+
+
 //Global Variables
-A2D_4CH_Isolated_ADC g_a2d_adc;
+A2D_Eload g_a2d_eload;
 HardwareSerial Serial3(PB11, PB10); // RX, TX - for RS485
 uint8_t g_a2d_cmd_source;
 bool g_a2d_is_query;
 char ser_buf[SER_BUF_LEN];
-uint8_t rs485_address;
+uint8_t g_a2d_rs485_address;
+unsigned long g_a2d_last_command_time;
+unsigned long g_a2d_last_control_time;
 
 void setup()
 {
@@ -74,13 +78,16 @@ void setup()
 	Wire.begin();				   // I2C
 	Serial.begin(BAUDRATE);		   // Communication with PC over USB
 	Serial3.begin(RS485_BAUDRATE); // RS485 Communication
-	g_a2d_adc.init();
+	//delay(2000); //delay to let serial monitor connect before printing stuff
+	g_a2d_eload.init();
 
 	g_a2d_cmd_source = 0;
 	g_a2d_is_query = false;
+	g_a2d_last_command_time = 0;
+	g_a2d_last_control_time = 0;
 
 #ifdef FORCE_EEPROM_REINIT
-	g_a2d_adc.force_eeprom_reinit();
+	g_a2d_eload.force_eeprom_reinit();
 #endif
 }
 
@@ -99,7 +106,7 @@ void loop()
 
 	// TODO - add a CRC check to RS485 communication.
 	// The same firmware should be uploaded to the base device as any others.
-	// If channel is greater than 4, then use [CH - 4*RS485_ADDR] as the address.
+	// If channel is greater than A2D_XXNUM_CHANNELS, then use [CH - 4*RS485_ADDR] as the address.
 
 	////////////////////////////////////// CHECK NEW COMMANDS
 
@@ -113,11 +120,13 @@ void loop()
 		// Read until a full command is received
 		chars_input = Serial.readBytesUntil(END_CHAR, ser_buf, SER_BUF_LEN);
 		ser_buf[chars_input] = '\0'; // terminate the input string with NULL to work with strtok
-		parse_command(ser_buf, command, &g_a2d_is_query, false, &rs485_address);
+		parse_command(ser_buf, command, false);
 
-		g_a2d_cmd_source = A2D_4CH_ISO_ADC_CMD_SOURCE_USB;
+		g_a2d_cmd_source = A2D_ELOAD_CMD_SOURCE_USB;
+		g_a2d_last_command_time = millis(); //TODO - only set this if the command is for this channel
 
-		// TODO - put the RS485 command here - reduces functions calls in SCPI handler functions
+		// TODO - put the RS485 command processing here - reduces functions calls in SCPI handler functions
+		//      - if its not on this device, then just pass it on and wait for the response
 	}
 
 	// CHECK COMMANDS FROM RS485 (priority 2)
@@ -145,15 +154,15 @@ void loop()
 		// Command response to base: rs485_addr is 0
 
 		// if addr is 0 and this is the base device, then send the rest of the response out over USB.
-		parse_command(ser_buf, command, &g_a2d_is_query, true, &rs485_address);
+		parse_command(ser_buf, command, true);
 
 #ifdef DEBUG
 		Serial.print(F("RS485 Address read: "));
-		Serial.println(rs485_address);
+		Serial.println(g_a2d_rs485_address);
 #endif
 
 		// if address is for this device
-		if (rs485_address == g_a2d_adc.get_rs485_addr())
+		if (g_a2d_rs485_address == g_a2d_eload.get_rs485_addr())
 		{
 
 // we need to process the command, but we send the response over RS485 instead of USB.
@@ -161,30 +170,25 @@ void loop()
 			Serial.println(F("g_a2d_cmd_source = RS485"));
 #endif
 
-			g_a2d_cmd_source = A2D_4CH_ISO_ADC_CMD_SOURCE_RS485;
+			g_a2d_cmd_source = A2D_ELOAD_CMD_SOURCE_RS485;
+			g_a2d_last_command_time = millis();
 		}
-		else
-		{ // if address is not for this device
-			strcpy(command, "NOCMD");
-		}
+		//else
+		//{ // if address is not for this device, don't do anything
+		//	strcpy(command, "NOCMD");
+		//}
 	}
 
 	// if no new commands from RS485 or USB
-	else
+	else if (!(CMDIS(command, NO_CMD)))
 	{
-		strcpy(command, "NOCMD");
+		strcpy(command, NO_CMD); //clear old command
 	}
 
 	////////////////////////////////////// PROCESS COMMANDS
 
-	// NOCMD
-	if (CMDIS(command, "NOCMD"))
-	{
-		;
-	}
-
 	//*IDN?
-	else if (CMDIS(command, "*IDN?"))
+	if (CMDIS(command, "*IDN"))
 	{
 		scpi_handler_idn();
 	}
@@ -195,178 +199,263 @@ void loop()
 		scpi_handler_rst();
 	}
 
-	//*CLS
-	else if (CMDIS(command, "*CLS"))
-	{
-		; // nothing since we don't have errors yet
-	}
-
-	//*TRG
-	else if (CMDIS(command, "*TRG"))
-	{
-		scpi_handler_trg();
-	}
-
-	// INSTR:LED VAL
+	// INSTR:LED VAL        or      INSTR:LED?
 	// VAL is boolean 0 or 1
 	else if (CMDIS(command, "INSTR:LED"))
 	{
-		scpi_handler_instr_led();
+		if(g_a2d_is_query)
+		{
+			scpi_handler_read_1_bool(&A2D_Eload::get_led);
+		}
+		else
+		{
+			scpi_handler_send_1_bool(&A2D_Eload::set_led);
+			//scpi_handler_instr_led();
+		}
+	}
+
+	// INSTR:FAN VAL      or      INSTR:FAN?
+	// VAL is boolean 0 or 1
+	else if (CMDIS(command, "INSTR:FAN"))
+	{
+		if(g_a2d_is_query)
+		{
+			scpi_handler_read_1_bool(&A2D_Eload::get_fan);
+		}
+		else
+		{
+			scpi_handler_send_1_bool(&A2D_Eload::set_fan);
+			//scpi_handler_instr_fan();
+		}
+	}
+
+	// INSTR:RELAY VAL     or    INSTR:RELAY?
+	// VAL is boolean 0 or 1
+	else if (CMDIS(command, "INSTR:RELAY"))
+	{
+		if(g_a2d_is_query)
+		{
+			scpi_handler_read_1_bool(&A2D_Eload::get_relay);
+		}
+		else
+		{
+			scpi_handler_send_1_bool(&A2D_Eload::set_relay);
+			//scpi_handler_instr_relay();
+		}
 	}
 
 	// MEAS:VOLT CH?
-	// CH is integer in range of 1-4, or 0. 0 means read all 4 channels
 	else if (CMDIS(command, "MEAS:VOLT"))
 	{
-		scpi_handler_meas_volt();
+		scpi_handler_read_1_float_ch(&A2D_Eload::measure_voltage);
+		//scpi_handler_meas_volt();
+	}
+
+	// MEAS:TEMP CH?
+	else if (CMDIS(command, "MEAS:TEMP"))
+	{
+		scpi_handler_read_1_float_ch(&A2D_Eload::measure_temperature);
+		//scpi_handler_meas_temp();
 	}
 
 	// MEAS:VOLT:ADC CH?
-	// CH is integer in range of 1-4, or 0. 0 means read all 4 channels
 	else if (CMDIS(command, "MEAS:VOLT:ADC"))
 	{
-		scpi_handler_meas_volt_adc();
+		scpi_handler_read_1_float_ch(&A2D_Eload::measure_raw_voltage);
+		//scpi_handler_meas_volt_adc();
 	}
 
-	// CAL:RESET CH
-	// CH is integer in range of 1-4, or 0. 0 means reset all 4 channels
-	else if (CMDIS(command, "CAL:RESET"))
+	// CAL:V:RST CH
+	else if (CMDIS(command, "CAL:V:RST"))
 	{
-		scpi_handler_cal_reset();
+		scpi_handler_no_arg_no_return_ch(&A2D_Eload::reset_v_calibration);
+		//scpi_handler_cal_v_reset();
 	}
 
-	// CAL:SAVE CH
-	// CH is integer in range of 1-4, or 0. 0 means save all 4 channels
-	else if (CMDIS(command, "CAL:SAVE"))
+	// CAL:V:SAV CH
+	else if (CMDIS(command, "CAL:V:SAV"))
 	{
-		scpi_handler_cal_save();
+		scpi_handler_no_arg_no_return_ch(&A2D_Eload::save_v_calibration);
+		//scpi_handler_cal_v_save();
 	}
 
-	// CAL:VOLT MEAS1,ACTUAL1,MEAS2,ACTUAL2,CH
-	else if (CMDIS(command, "CAL:VOLT"))
+	// CAL:I:RST CH
+	else if (CMDIS(command, "CAL:I:RST"))
 	{
-		scpi_handler_cal_volt();
+		scpi_handler_no_arg_no_return_ch(&A2D_Eload::reset_i_calibration);
+		//scpi_handler_cal_i_reset();
 	}
 
-	// CAL CH?
-	// CH is integer in range of 1-4, or 0. 0 means return all 4 channels
-	else if (CMDIS(command, "CAL"))
+	// CAL:I:SAV CH
+	else if (CMDIS(command, "CAL:I:SAV"))
 	{
-		scpi_handler_cal();
+		scpi_handler_no_arg_no_return_ch(&A2D_Eload::save_i_calibration);
+		//scpi_handler_cal_i_save();
 	}
 
-	// INSTR:GAIN GAIN,CH
-	// GAIN 1,2,4,8
-	// CH is integer in range of 1-4, or 0. 0 means all 4 channels
-	else if (CMDIS(command, "INSTR:GAIN"))
+	// CAL:V CH,MEAS1,ACTUAL1,MEAS2,ACTUAL2  or  CAL:V CH?
+	else if (CMDIS(command, "CAL:V"))
 	{
-		scpi_handler_instr_gain();
+		if(g_a2d_is_query)
+		{
+			scpi_handler_read_2_float_ch(&A2D_Eload::get_cal_v_offset, &A2D_Eload::get_cal_v_gain);
+		}
+		else
+		{
+			scpi_handler_send_4_float(&A2D_Eload::calibrate_voltage);
+			//scpi_handler_cal_volt();
+		}
+		
 	}
 
-	// INSTR:DR DR,CH
-	// DR 15,60,240
-	// CH is integer in range of 1-4, or 0. 0 means all 4 channels
-	else if (CMDIS(command, "INSTR:DR"))
+	// CAL:I CH,MEAS1,ACTUAL1,MEAS2,ACTUAL2  or  CAL:I CH?
+	else if (CMDIS(command, "CAL:I"))
 	{
-		scpi_handler_instr_dr();
+		if(g_a2d_is_query)
+		{
+			scpi_handler_read_2_float_ch(&A2D_Eload::get_cal_i_offset, &A2D_Eload::get_cal_i_gain);
+		}
+		else
+		{
+			scpi_handler_send_4_float(&A2D_Eload::calibrate_current);
+			//scpi_handler_cal_curr();
+		}
+		
+		
 	}
 
-	// INSTR:MODE MODE,CH
-	// MODE 0 = Single Shot, 1 = Continuous
-	// CH is integer in range of 1-4, or 0. 0 means all 4 channels
-	else if (CMDIS(command, "INSTR:MODE"))
+	// CURR CH? or CURR CH,VAL
+	else if (CMDIS(command, "CURR"))
 	{
-		scpi_handler_instr_mode();
+		if(g_a2d_is_query)
+		{
+			//scpi_handler_curr_query();
+			scpi_handler_read_1_float_ch(&A2D_Eload::get_current_target);
+		}
+		else
+		{
+			scpi_handler_curr();
+		}
 	}
 
-	// INSTR:RS485:SET ADDR
-	// Set RS485 address
-	else if (CMDIS(command, "INSTR:RS485:SET"))
+	// CURR:CTRL CH?
+	// returns the voltage output of the DAC that controls the current
+	else if (CMDIS(command, "CURR:CTRL"))
 	{
-		scpi_handler_instr_rs485_set();
+		scpi_handler_read_1_float_ch(&A2D_Eload::get_dac_voltage);
+		//scpi_handler_curr_ctrl();
 	}
 
-	// INSTR:RS485?
+	// INSTR:RS485?    or     INSTR:RS485 ADDR
 	// Returns the current RS485 address
-	else if (CMDIS(command, "INSTR:RS485?"))
+	else if (CMDIS(command, "INSTR:RS485"))
 	{
-		scpi_handler_instr_rs485();
+		if(g_a2d_is_query)
+		{
+			scpi_handler_instr_rs485();
+		}
+		else
+		{
+			scpi_handler_instr_rs485_set();
+		}
 	}
 
-	// INSTR:RS485:SAVE
+	// INSTR:RS485:SAV
 	// Save current RS485 address to EEPROM
-	else if (CMDIS(command, "INSTR:RS485:SAVE"))
+	else if (CMDIS(command, "INSTR:RS485:SAV"))
 	{
 		scpi_handler_instr_rs485_save();
 	}
+
+
+	//////////////////////////////// CHECK CONTROL
+	if((millis() - g_a2d_last_control_time) > A2D_ELOAD_CONTROL_S)
+	{
+		g_a2d_last_control_time = millis();
+
+		//Temperature control of fan, and temperature limit
+		fan_temp_control();
+
+		//Output Watchdog - turn off output if no commands for this device received from computer in X seconds
+		output_watchdog();
+
+		//Output control for 24V supply - turn off output command if no 24V supply present
+		output_24v_test();
+	}
 }
 
-//////////////////////////////////// SCPI COMMAND HANDLING FUNCTIONS
-
-void scpi_handler_idn()
+///////////////////////////////////// CONTROL
+void fan_temp_control()
 {
-	Serial.print(MANUFACTURER);
-	Serial.print(",");
-	Serial.print(MODEL);
-	Serial.print(",");
-	Serial.print(g_a2d_adc.get_serial_num());
-	Serial.print(",");
-	Serial.println(VERSION);
+	float eload_temp = g_a2d_eload.measure_temperature();
+	if(eload_temp > (A2D_ELOAD_FAN_TEMP_C + A2D_ELOAD_FAN_TEMP_HYST))
+	{
+		g_a2d_eload.set_fan(true);
+	}
+	else if(eload_temp < (A2D_ELOAD_FAN_TEMP_C - A2D_ELOAD_FAN_TEMP_HYST))
+	{
+		g_a2d_eload.set_fan(false);
+	}
+
+	if(eload_temp > A2D_ELOAD_MAX_TEMP_C)
+	{
+		g_a2d_eload.set_relay(false);
+	}
+}
+
+void output_watchdog()
+{
+	if(g_a2d_eload.get_relay() && ((millis() - g_a2d_last_command_time)/1000.0 > A2D_ELOAD_WATCHDOG_TIMEOUT_S))
+	{
+		g_a2d_eload.set_relay(false);
+	}
+}
+
+void output_24v_test()
+{
+	bool ext_supply_state = g_a2d_eload.check_24v_supply(); //must be called often to initialize DAC when available
+	//if output is on, turn it off if there is no 24V supply
+	if(g_a2d_eload.get_relay() && (!ext_supply_state))
+	{
+		g_a2d_eload.set_relay(false);
+	}
+}
+
+//////////////////////////////////// GENERIC SCPI HANDLERS
+
+void scpi_handler_send_1_bool(void (A2D_Eload::*func_to_call)(bool))
+{
+	(g_a2d_eload.*func_to_call)(parse_bool());
+}
+
+void scpi_handler_read_1_bool(bool (A2D_Eload::*func_to_call)())
+{
+	Serial.println((g_a2d_eload.*func_to_call)(), DEC); //print out in ASCII decimal
 	Serial.flush();
 }
 
-void scpi_handler_rst()
-{
-	g_a2d_adc.reset();
-}
-
-void scpi_handler_trg()
-{
-	g_a2d_adc.trigger_all_single_shot();
-}
-
-void scpi_handler_instr_led()
-{
-	g_a2d_adc.set_led(parse_bool());
-}
-
-void scpi_handler_meas_volt()
+void scpi_handler_read_1_float_ch(float (A2D_Eload::*func_to_call)())
 {
 	uint8_t ch = parse_channel();
 
-	// channel is 0, and command from USB
-	if (ch == 0 && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		for (uint8_t i = 0; i < A2D_4CH_ISO_ADC_NUM_CHANNELS; i++)
-		{
-			Serial.print(g_a2d_adc.measure_voltage(i), 4);
-			if (i != A2D_4CH_ISO_ADC_NUM_CHANNELS - 1)
-			{
-				Serial.print(",");
-			}
-		}
-		Serial.println("");
-		Serial.flush();
-	}
-
 	// channel is on this device
-	else if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
+	if (ch >= 1 && ch <= A2D_ELOAD_NUM_CHANNELS)
 	{
-		if (g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+		if (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 		{
-			Serial.println(g_a2d_adc.measure_voltage(ch - 1), 4);
+			Serial.println((g_a2d_eload.*func_to_call)(), 4);
 			Serial.flush();
 		}
-		else if (g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_RS485)
+		else if (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_RS485)
 		{
 #ifdef DEBUG
 			Serial.println(F("Command from RS485"));
 #endif
 
-			g_a2d_adc.set_rs485_receive(false);
-			Serial3.println(g_a2d_adc.measure_voltage(ch - 1), 4);
+			g_a2d_eload.set_rs485_receive(false);
+			Serial3.println((g_a2d_eload.*func_to_call)(), 4);
 			Serial3.flush();
-			g_a2d_adc.set_rs485_receive(true);
+			g_a2d_eload.set_rs485_receive(true);
 
 #ifdef DEBUG
 			Serial.println(F("Response sent RS485"));
@@ -376,7 +465,7 @@ void scpi_handler_meas_volt()
 	}
 
 	// channel is not 0, and channel is not on this device, and this is a base device.
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -384,38 +473,43 @@ void scpi_handler_meas_volt()
 	}
 }
 
-void scpi_handler_meas_volt_adc()
+void scpi_handler_no_arg_no_return_ch(void (A2D_Eload::*func_to_call)())
 {
 	uint8_t ch = parse_channel();
-	if (ch == 0 && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+	if (ch >= 1 && ch <= A2D_ELOAD_NUM_CHANNELS)
 	{
-		for (uint8_t i = 0; i < A2D_4CH_ISO_ADC_NUM_CHANNELS; i++)
-		{
-			Serial.print(g_a2d_adc.measure_raw_voltage(i), 4);
-			if (i != A2D_4CH_ISO_ADC_NUM_CHANNELS - 1)
-			{
-				Serial.print(",");
-			}
-		}
-		Serial.println("");
-		Serial.flush();
+		(g_a2d_eload.*func_to_call)();
 	}
-	else if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
+	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 	{
-		if (g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+		// if this is a base device, send command up over RS485.
+		pass_cmd_to_rs485(calc_rs485_address(ch));
+	}
+}
+
+void scpi_handler_read_2_float_ch(float (A2D_Eload::*func_to_call_1)(), float (A2D_Eload::*func_to_call_2)())
+{
+	uint8_t ch = parse_channel();
+	if (ch >= 1 && ch <= A2D_ELOAD_NUM_CHANNELS)
+	{
+		if (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 		{
-			Serial.println(g_a2d_adc.measure_raw_voltage(ch - 1), 4);
+			Serial.print((g_a2d_eload.*func_to_call_1)(), 5);
+			Serial.print(",");
+			Serial.println((g_a2d_eload.*func_to_call_2)(), 5);
 			Serial.flush();
 		}
-		else if (g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_RS485)
+		else if (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_RS485)
 		{
-			g_a2d_adc.set_rs485_receive(false);
-			Serial3.println(g_a2d_adc.measure_raw_voltage(ch - 1), 4);
+			g_a2d_eload.set_rs485_receive(false);
+			Serial3.print((g_a2d_eload.*func_to_call_1)(), 5);
+			Serial3.print(",");
+			Serial3.println((g_a2d_eload.*func_to_call_2)(), 5);
 			Serial3.flush();
-			g_a2d_adc.set_rs485_receive(true);
+			g_a2d_eload.set_rs485_receive(true);
 		}
 	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -423,46 +517,10 @@ void scpi_handler_meas_volt_adc()
 	}
 }
 
-void scpi_handler_cal_reset()
+void scpi_handler_send_4_float(void (A2D_Eload::*func_to_call)(float, float, float, float))
 {
 	uint8_t ch = parse_channel();
-	if (ch == 0 && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		g_a2d_adc.reset_all_calibration();
-	}
-	else if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
-	{
-		g_a2d_adc.reset_calibration(ch - 1);
-	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		// if this is a base device, send command up over RS485.
-		pass_cmd_to_rs485(calc_rs485_address(ch));
-	}
-}
-
-void scpi_handler_cal_save()
-{
-	uint8_t ch = parse_channel();
-	if (ch == 0 && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		g_a2d_adc.save_all_calibration();
-	}
-	else if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
-	{
-		g_a2d_adc.save_calibration(ch - 1);
-	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		// if this is a base device, send command up over RS485.
-		pass_cmd_to_rs485(calc_rs485_address(ch));
-	}
-}
-
-void scpi_handler_cal_volt()
-{
-	uint8_t ch = parse_channel();
-	if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
+	if (ch >= 1 && ch <= A2D_ELOAD_NUM_CHANNELS)
 	{
 		// create memory to store all the floats
 		const uint8_t num_floats = 4;
@@ -471,198 +529,44 @@ void scpi_handler_cal_volt()
 		{
 			float_arr[index] = parse_float();
 		}
-		g_a2d_adc.calibrate_voltage(ch - 1, float_arr[0], float_arr[1], float_arr[2], float_arr[3]);
+		(g_a2d_eload.*func_to_call)(float_arr[0], float_arr[1], float_arr[2], float_arr[3]);
 	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
 	}
 }
 
-void scpi_handler_cal()
+//////////////////////////////////// SPECIFIC SCPI HANDLERS
+
+void scpi_handler_idn()
 {
-	uint8_t ch = parse_channel();
-	if (ch == 0 && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		for (uint8_t i = 0; i < A2D_4CH_ISO_ADC_NUM_CHANNELS; i++)
-		{
-			Serial.print(g_a2d_adc.get_cal_offset(i), 5);
-			Serial.print(",");
-			Serial.print(g_a2d_adc.get_cal_gain(i), 5);
-			if (i != A2D_4CH_ISO_ADC_NUM_CHANNELS - 1)
-			{
-				Serial.print(",");
-			}
-		}
-		Serial.println("");
-		Serial.flush();
-	}
-	else if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
-	{
-		if (g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-		{
-			Serial.print(g_a2d_adc.get_cal_offset(ch - 1), 5);
-			Serial.print(",");
-			Serial.println(g_a2d_adc.get_cal_gain(ch - 1), 5);
-			Serial.flush();
-		}
-		else if (g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_RS485)
-		{
-			g_a2d_adc.set_rs485_receive(false);
-			Serial3.print(g_a2d_adc.get_cal_offset(ch - 1), 5);
-			Serial3.print(",");
-			Serial3.println(g_a2d_adc.get_cal_gain(ch - 1), 5);
-			Serial3.flush();
-			g_a2d_adc.set_rs485_receive(true);
-		}
-	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		// if this is a base device, send command up over RS485.
-		pass_cmd_to_rs485(calc_rs485_address(ch));
-		wait_rs485_response_send_usb(ser_buf);
-	}
+	Serial.print(MANUFACTURER);
+	Serial.print(F(","));
+	Serial.print(MODEL);
+	Serial.print(F(","));
+	//Serial.print(g_a2d_eload.get_serial_num());
+	Serial.print(SERIAL);
+	Serial.print(F(","));
+	Serial.println(VERSION);
+	Serial.flush();
 }
 
-void scpi_handler_instr_gain()
+void scpi_handler_rst()
 {
-	uint8_t gain_p = parse_uint8_t();
-	uint8_t gain = 0;
-	uint8_t ch = parse_channel();
-
-	if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
-	{
-		bool valid_gain = false;
-		if (gain_p == 1)
-		{
-			gain = MCP3425_GAIN_1;
-			valid_gain = true;
-		}
-		else if (gain_p == 2)
-		{
-			gain = MCP3425_GAIN_2;
-			valid_gain = true;
-		}
-		else if (gain_p == 4)
-		{
-			gain = MCP3425_GAIN_4;
-			valid_gain = true;
-		}
-		else if (gain_p == 8)
-		{
-			gain = MCP3425_GAIN_8;
-			valid_gain = true;
-		}
-
-		if (valid_gain)
-		{
-			if (ch == 0)
-			{
-				for (uint8_t i = 0; i < A2D_4CH_ISO_ADC_NUM_CHANNELS; i++)
-				{
-					g_a2d_adc.set_gain(i, gain);
-				}
-			}
-			else
-			{
-				g_a2d_adc.set_gain(ch - 1, gain);
-			}
-		}
-	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		// if this is a base device, send command up over RS485.
-		pass_cmd_to_rs485(calc_rs485_address(ch));
-	}
+	g_a2d_eload.reset();
 }
 
-void scpi_handler_instr_dr()
+void scpi_handler_curr()
 {
-	uint8_t data_rate_p = parse_uint8_t();
-	uint8_t data_rate = 0;
 	uint8_t ch = parse_channel();
-
-	if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
+	if (ch >= 1 && ch <= A2D_ELOAD_NUM_CHANNELS)
 	{
-		bool valid_data_rate = false;
-
-		if (data_rate_p == 15)
-		{
-			data_rate = MCP3425_DR_15SPS;
-			valid_data_rate = true;
-		}
-		else if (data_rate_p == 60)
-		{
-			data_rate = MCP3425_DR_60SPS;
-			valid_data_rate = true;
-		}
-		else if (data_rate_p == 240)
-		{
-			data_rate = MCP3425_DR_240SPS;
-			valid_data_rate = true;
-		}
-
-		if (valid_data_rate)
-		{
-			if (ch == 0)
-			{
-				for (uint8_t i = 0; i < A2D_4CH_ISO_ADC_NUM_CHANNELS; i++)
-				{
-					g_a2d_adc.set_data_rate(i, data_rate);
-				}
-			}
-			else
-			{
-				g_a2d_adc.set_data_rate(ch - 1, data_rate);
-			}
-		}
+		float curr_target = parse_float();
+		g_a2d_eload.set_current_target(curr_target);
 	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
-	{
-		// if this is a base device, send command up over RS485.
-		pass_cmd_to_rs485(calc_rs485_address(ch));
-	}
-}
-
-void scpi_handler_instr_mode()
-{
-	uint8_t mode_p = parse_uint8_t();
-	uint8_t mode = 0;
-	uint8_t ch = parse_channel();
-
-	if (ch >= 1 && ch <= A2D_4CH_ISO_ADC_NUM_CHANNELS)
-	{
-
-		bool valid_mode = false;
-
-		if (mode_p == 0)
-		{
-			mode = MCP3425_MODE_SINGLE_SHOT;
-			valid_mode = true;
-		}
-		else if (mode_p == 1)
-		{
-			mode = MCP3425_MODE_CONTINUOUS;
-			valid_mode = true;
-		}
-
-		if (valid_mode)
-		{
-			if (ch == 0)
-			{
-				for (uint8_t i = 0; i < A2D_4CH_ISO_ADC_NUM_CHANNELS; i++)
-				{
-					g_a2d_adc.set_mode(i, mode);
-				}
-			}
-			else
-			{
-				g_a2d_adc.set_mode(ch - 1, mode);
-			}
-		}
-	}
-	else if (g_a2d_adc.get_rs485_addr() == A2D_4CH_ISO_ADC_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_4CH_ISO_ADC_CMD_SOURCE_USB)
+	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -672,25 +576,25 @@ void scpi_handler_instr_mode()
 void scpi_handler_instr_rs485_set()
 {
 	uint8_t addr = parse_uint8_t();
-	g_a2d_adc.set_rs485_addr(addr);
+	g_a2d_eload.set_rs485_addr(addr);
 }
 
 void scpi_handler_instr_rs485()
 {
-	Serial.println(g_a2d_adc.get_rs485_addr());
+	Serial.println(g_a2d_eload.get_rs485_addr());
 	Serial.flush();
 }
 
 void scpi_handler_instr_rs485_save()
 {
-	g_a2d_adc.save_rs485_addr();
+	g_a2d_eload.save_rs485_addr();
 }
 
 //////////////////////////////////// SCPI PARSING FUNCTIONS
 
 uint8_t calc_rs485_address(uint8_t ch)
 {
-	return uint8_t((ch - 1) / A2D_4CH_ISO_ADC_NUM_CHANNELS);
+	return uint8_t((ch - 1) / A2D_ELOAD_NUM_CHANNELS);
 }
 
 uint8_t parse_uint8_t()
@@ -709,9 +613,7 @@ uint8_t parse_channel()
 	// if command is not for this device, and this is not the base device, then ignore the command.
 	// if command is for this device, then process the command.
 
-	char delimeters[] = " ,?";
-	char *token = strtok(NULL, delimeters);
-	uint8_t channel = uint8_t(atoi(token));
+	uint8_t channel = parse_uint8_t();
 
 	if (channel == 0)
 	{
@@ -719,10 +621,10 @@ uint8_t parse_channel()
 	}
 	else if (channel_on_this_device(channel))
 	{
-		channel = channel % A2D_4CH_ISO_ADC_NUM_CHANNELS;
+		channel = channel % A2D_ELOAD_NUM_CHANNELS;
 		if (channel == 0)
 		{
-			channel = A2D_4CH_ISO_ADC_NUM_CHANNELS;
+			channel = A2D_ELOAD_NUM_CHANNELS;
 		}
 		return channel;
 	}
@@ -757,15 +659,15 @@ float parse_float()
 
 bool channel_on_this_device(uint8_t channel)
 {
-	if ((channel >= (g_a2d_adc.get_rs485_addr()) * A2D_4CH_ISO_ADC_NUM_CHANNELS + 1) &&
-		(channel <= (g_a2d_adc.get_rs485_addr()) * A2D_4CH_ISO_ADC_NUM_CHANNELS + A2D_4CH_ISO_ADC_NUM_CHANNELS))
+	if ((channel >= (g_a2d_eload.get_rs485_addr()) * A2D_ELOAD_NUM_CHANNELS + 1) &&
+		(channel <= (g_a2d_eload.get_rs485_addr()) * A2D_ELOAD_NUM_CHANNELS + A2D_ELOAD_NUM_CHANNELS))
 	{
 		return true;
 	}
 	return false;
 }
 
-void parse_command(char ser_buf[], char command[], bool *is_query, bool from_rs485, uint8_t *rs485_addr)
+void parse_command(char ser_buf[], char command[], bool from_rs485)
 {
 	// parses commands from the USB port (base device)
 
@@ -778,16 +680,18 @@ void parse_command(char ser_buf[], char command[], bool *is_query, bool from_rs4
 	// strtok maintains a static pointer to the original string passed to it.
 	// to get the next token, pass NULL as the first argument.
 
-	char delimeters_address_command[] = " ";
+	char delimeters_address_command[] = " ?";
 	char *token;
 
 	if (strchr(ser_buf, '?') != NULL)
 	{
-		*is_query = true;
+		g_a2d_is_query = true;
+		//Serial.println("is_query=true");
 	}
 	else
 	{
-		*is_query = false;
+		g_a2d_is_query = false;
+		//Serial.println("is_query=false");
 	}
 
 	if (from_rs485)
@@ -811,7 +715,7 @@ void parse_command(char ser_buf[], char command[], bool *is_query, bool from_rs4
 		//          to
 		//          (X+1) * A2D_4CH_ISO_ADC_NUM_CHANNELS + A2D_4CH_ISO_ADC_NUM_CHANNELS
 		token = strtok(ser_buf, delimeters_address_command);
-		uint8_t rs485_address = uint8_t(atoi(token));
+		g_a2d_rs485_address = uint8_t(atoi(token));
 		token = strtok(NULL, delimeters_address_command);
 		strcpy(command, token);
 	}
@@ -824,12 +728,12 @@ void parse_command(char ser_buf[], char command[], bool *is_query, bool from_rs4
 
 void pass_cmd_to_rs485(uint8_t rs485_addr)
 {
-	g_a2d_adc.set_rs485_receive(false);
+	g_a2d_eload.set_rs485_receive(false);
 	Serial3.print(rs485_addr); // rs485 address
 	Serial3.print(" ");
 	Serial3.print(ser_buf);
 	Serial3.flush();
-	g_a2d_adc.set_rs485_receive(true);
+	g_a2d_eload.set_rs485_receive(true);
 
 #ifdef DEBUG
 	Serial.print(F("Printed over RS485: "));
@@ -848,7 +752,7 @@ void wait_rs485_response_send_usb(char ser_buf[])
 	Serial.println(F("Waiting for RS485"));
 #endif
 
-	while (!Serial3.available())
+	while (!Serial3.available()) //TODO - add timeout
 	{
 		delayMicroseconds(5);
 	}

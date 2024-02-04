@@ -1,6 +1,5 @@
 //Board Description File for A2D_Sense_Board_V1.0 Board
 
-//#include "MCP3425.h"
 #include "Arduino.h"
 
 //I2C Address
@@ -28,6 +27,7 @@
 
 #define A2D_ELOAD_DEFAULT_RS485_ADDR	0
 #define A2D_ELOAD_BASE_RS485_ADDR		0
+#define A2D_ELOAD_NUM_CHANNELS          1
 
 #define A2D_ELOAD_RS485_DE_PIN		    PB1
 #define A2D_ELOAD_RS485_TRANSMIT        1
@@ -39,6 +39,9 @@
 //scaling
 #define A2D_ELOAD_DEFAULT_V_SCALING     11.0 // (1k + 10k)/1k
 #define A2D_ELOAD_DEFAULT_V_OFFSET	    0.0
+#define A2D_ELOAD_24V_MIN_V             20
+#define A2D_ELOAD_24V_MAX_V             26
+
 
 #define A2D_ELOAD_DEFAULT_I_SCALING     2.0 //2.5V ref gives 5A output 1/(10mOhm * 50V/V Amp)
 #define A2D_ELOAD_DEFAULT_I_OFFSET      0.0
@@ -49,6 +52,17 @@
 #define A2D_ELOAD_DEFAULT_TEMP_SHB      2.359019498e-4
 #define A2D_ELOAD_DEFAULT_TEMP_SHC      0.7926382169e-7
 
+//Control constants
+#define A2D_ELOAD_FAN_TEMP_C            35.0
+#define A2D_ELOAD_FAN_TEMP_HYST         2.0
+#define A2D_ELOAD_MAX_TEMP_C            80.0
+#define A2D_ELOAD_WATCHDOG_TIMEOUT_S    10.0
+#define A2D_ELOAD_CONTROL_S             1.0
+
 #define A2D_ELOAD_EEPROM_INIT_VAL		0x55 //0b01010101
 #define A2D_ELOAD_SERIAL_CHAR_LEN		5 //4 characters in the serial number, +1 for the null string
 #define A2D_ELOAD_DEFAULT_SERIAL_NUM	"0000"
+
+#define MANUFACTURER F("A2D Electronics")
+#define MODEL F("Eload")
+#define VERSION F("V1.0.0")

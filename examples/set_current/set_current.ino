@@ -21,14 +21,33 @@ void setup() {
 	eload.init();
 	Serial.println("Initialization Complete");
 	
-	float current_target = 1.0;
+	//Wait for 24V supply to be applied
+	while(!eload.check_24v_supply())
+	{
+		delay(500);
+	}
+
+	float current_target = 0.5;
 
 	eload.set_current_target(current_target);
 	Serial.print("Set Value: ");
-	Serial.print(current_target);
+	Serial.println(current_target);
 
-	Serial.print(" Actual Value: ");
+	eload.set_relay(true);
+	eload.set_fan(true);
+	eload.set_led(true);
+
+	Serial.print("Actual Value: ");
 	Serial.println(eload.get_current_target());
+
+	delay(10000);
+
+	eload.set_current_target(0.0);
+	eload.set_relay(false);
+	eload.set_fan(false);
+	eload.set_led(false);
+
+	Serial.println("Output off");
 }
 
 void loop() {

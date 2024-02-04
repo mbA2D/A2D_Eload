@@ -4,7 +4,6 @@
  * 
  */
 
-
 #ifndef A2D_Eload_h
 #define A2D_Eload_h
 
@@ -31,7 +30,7 @@ class A2D_Eload
 		void save_v_calibration();
 		float get_cal_v_offset();
 		float get_cal_v_gain();
-
+		bool check_24v_supply(); //this must be called often to initialize the DAC once the 24V supply is up.
 
 		//Temperature of heatsink
 		float measure_temperature();
@@ -42,9 +41,10 @@ class A2D_Eload
 		//current targets
 		void reset_i_calibration();
 		void save_i_calibration();
-		uint16_t get_dac_voltage();
+		float get_dac_voltage();
 		void set_current_target(float current);
 		float get_current_target();
+		void calibrate_current(float p1_meas, float p1_act, float p2_meas, float p2_act);
 		float get_cal_i_offset();
 		float get_cal_i_gain();
 
@@ -53,11 +53,14 @@ class A2D_Eload
 		void save_all_calibration();
 
 		void set_led(bool state);
+		bool get_led();
 
 		void set_fan(bool state);
-		void set_fan_speed(float speed);
+		bool get_fan();
+		//void set_fan_speed(float speed);
 
 		void set_relay(bool state);
+		bool get_relay();
 
 		//RS485
 		void set_rs485_receive(bool state);
@@ -76,12 +79,18 @@ class A2D_Eload
 		float _convert_voltage_to_current_target(float voltage);
 		void _init_eeprom();
 		void _init_from_eeprom();
+		void _init_dac();
+		void _reset_dac();
 		
 		//*********VARIABLES/CLASSES*********
 		uint8_t _ee_initialized;
 		char _serial[A2D_ELOAD_SERIAL_CHAR_LEN];
 		uint8_t _rs485_addr;
 		TwoWire *_i2c;
+		bool _relay_state;
+		bool _fan_state;
+		bool _led_state;
+		bool _24v_supply_state;
 		
 		//scaling for voltages
 		float _v_scaling; // V/V
@@ -96,7 +105,7 @@ class A2D_Eload
 
 		//EEPROM Addresses
 		int _ee_addr_initialized;
-		int _ee_addr_serial;
+		int _ee_addr_serial; //start address of the chars
 		int _ee_addr_rs485_addr;
 		int _ee_addr_v_off;
 		int _ee_addr_v_scale;

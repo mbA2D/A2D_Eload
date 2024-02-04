@@ -6,16 +6,16 @@
 
 #include "A2D_Eload.h"
 
-
 //constructor
 A2D_Eload::A2D_Eload()
 {	
 	_dac_i2c_addr = A2D_ELOAD_DAC_I2C_ADDR;
 	
 	//EEPROM Addresses
+	//TODO - these could all be constants/defines instead of int
 	_ee_addr_initialized = 0;
 	_ee_addr_serial = _ee_addr_initialized + sizeof(_ee_initialized);
-	_ee_addr_v_scale = _ee_addr_serial + sizeof(_serial);
+	_ee_addr_v_scale = _ee_addr_serial + sizeof(*_serial)*A2D_ELOAD_SERIAL_CHAR_LEN;
 	_ee_addr_v_off = _ee_addr_v_scale + sizeof(_v_scaling);
 	_ee_addr_rs485_addr = _ee_addr_v_off + sizeof(_v_offset);
 	_ee_addr_t_sha = _ee_addr_rs485_addr + sizeof(_rs485_addr);
@@ -26,15 +26,11 @@ A2D_Eload::A2D_Eload()
 	
 	//DAC
 	_dac = new DACX0501();
-	
-	_init_eeprom();
 
 	//Serial number
-	#ifdef SERIAL_NUM
-	strcpy(_serial, SERIAL_NUM);
-	#else
+	//#ifdef SERIAL
 	strcpy(_serial, A2D_ELOAD_DEFAULT_SERIAL_NUM);
-	#endif
+	//#endif
 }
 
 void A2D_Eload::init(TwoWire *i2c)
@@ -49,23 +45,41 @@ void A2D_Eload::init(TwoWire *i2c)
 
 	analogReadResolution(12);
 
+	_24v_supply_state = false;
+	
 	_i2c = i2c;
-	_dac->init(_dac_i2c_addr);
+	_init_dac();
+	
 	reset();
 }
 
-void A2D_Eload::reset()
+void A2D_Eload::_init_dac()
 {
-	set_led(false);
-	set_rs485_receive(true);
-	set_fan(false);
-	set_relay(false);
-	
+	_dac->init(_dac_i2c_addr, _i2c);
+}
+
+void A2D_Eload::_reset_dac()
+{
 	//setup DAC
 	_dac->reset();
 	_dac->set_buf_gain(DACX0501_BUFGAIN_1); //buf gain of 1 for 0-2.5 output
 	_dac->shut_down_ref(false); //use internal reference
+	_dac->set_dac(0.0); //set to 0-scale DAC output
+	_dac->shut_down_dac(false); //enable output
+}
 
+void A2D_Eload::reset()
+{
+	//Serial.println("reset");
+
+	set_led(false);
+	set_rs485_receive(true);
+	set_fan(false);
+	set_relay(false);
+
+	_24v_supply_state = false;
+	_reset_dac();
+	
 	_init_from_eeprom();
 }
 
@@ -80,15 +94,36 @@ float A2D_Eload::measure_voltage()
 	return _convert_adc_voltage_to_voltage(voltage);
 }
 
+bool A2D_Eload::check_24v_supply()
+{
+	float voltage = measure_voltage();
+	if(voltage <= A2D_ELOAD_24V_MAX_V && voltage >= A2D_ELOAD_24V_MIN_V)
+	{
+		if(!_24v_supply_state)
+		{
+			//need to reset and initialize the DAC
+			_init_dac();
+			_reset_dac();
+		}
+		_24v_supply_state = true;
+		return true;
+	}
+	else
+	{
+		_24v_supply_state = false;
+		return false;
+	}
+}
+
 float A2D_Eload::measure_temperature()
 {
 	float voltage = float(analogRead(A2D_ELOAD_NTC_PIN))/A2D_ELOAD_ADC_FULL_SCALE*A2D_ELOAD_ADC_VREF;
 	return _convert_adc_voltage_to_temperature(voltage);
 }
 
-uint16_t A2D_Eload::get_dac_voltage()
+float A2D_Eload::get_dac_voltage()
 {
-	_dac->get_voltage();
+	return _dac->get_voltage();
 }
 
 void A2D_Eload::calibrate_voltage(float p1_meas, float p1_act, float p2_meas, float p2_act)
@@ -96,6 +131,13 @@ void A2D_Eload::calibrate_voltage(float p1_meas, float p1_act, float p2_meas, fl
 	//calculate new offset (b) and scaling (m) in:  actual = m * measured + b
 	_v_scaling = (p2_meas - p1_meas) / (p2_act - p1_act); //rise in actual / run in measured
 	_v_offset = p2_act - (1/_v_scaling) * p2_meas; //b = actual - m * measured
+}
+
+void A2D_Eload::calibrate_current(float p1_meas, float p1_act, float p2_meas, float p2_act)
+{
+	//calculate new offset (b) and scaling (m) in:  actual = m * measured + b
+	_i_scaling = (p2_meas - p1_meas) / (p2_act - p1_act); //rise in actual / run in measured
+	_i_offset = p2_act - (1/_i_scaling) * p2_meas; //b = actual - m * measured
 }
 
 void A2D_Eload::set_sh_constants(float sha, float shb, float shc)
@@ -194,9 +236,18 @@ void A2D_Eload::_init_eeprom()
 	set_rs485_addr(A2D_ELOAD_DEFAULT_RS485_ADDR);
 	save_rs485_addr();
 	
-	//Serial Number
-	EEPROM.put(_ee_addr_serial, _serial);
-	
+	//Serial Number - only put if SERIAL is defined
+	//#ifdef SERIAL
+	//for(int i = 0; i < (A2D_ELOAD_SERIAL_CHAR_LEN-1); i++)
+	//{
+	//	EEPROM.put(_ee_addr_serial + i*sizeof(*_serial), _serial[i]);
+	//	Serial.print("put: ");
+	//	Serial.print(_serial[i], HEX);
+	//	Serial.print(" at ");
+	//	Serial.println(_ee_addr_serial + i*sizeof(*_serial));
+	//}
+	//#endif
+
 	//Calibration Values
 	reset_all_calibration();
 	save_all_calibration();
@@ -206,17 +257,45 @@ void A2D_Eload::_init_eeprom()
 
 void A2D_Eload::_init_from_eeprom()
 {
+	//Serial.println("_init_from_eeprom");
+	
 	//check the _ee_initialized byte
 	EEPROM.get(_ee_addr_initialized, _ee_initialized);
 	
 	//if it is not correct, then load the default values in EEPROM
+	//this should only need to happen the first time the board is programmed
 	if(_ee_initialized != A2D_ELOAD_EEPROM_INIT_VAL)
 	{
+		//Serial.println("_ee_initialized_not_correct");
 		_init_eeprom();
 	}
 	
+
 	//now load the values from EEPROM to the class variables
-	EEPROM.get(_ee_addr_serial, _serial); //serial number
+	/*
+	bool _serial_defined = false; //there seems to be a bug with #ifdef in Arduino IDE
+	#ifdef SERIAL
+	_serial_defined = true;
+	#endif
+	//#ifndef SERIAL //only load if SERIAL is not defined
+	Serial.print("_serial_defined: ");
+	Serial.println(_serial_defined);
+	if(!_serial_defined)
+	{
+		Serial.println("Loading serial number");
+		for(uint8_t i = 0; i < (A2D_ELOAD_SERIAL_CHAR_LEN-1); i++)
+		{
+			EEPROM.get(_ee_addr_serial + i*sizeof(*_serial), _serial[i]); //serial number
+			Serial.print("got: ");
+			Serial.print(_serial[i], HEX);
+			Serial.print(" from ");
+			Serial.println(_ee_addr_serial + i*sizeof(*_serial));
+		}
+		_serial[A2D_ELOAD_SERIAL_CHAR_LEN-1] = '\0';
+	}
+	//#endif
+	*/
+
 	EEPROM.get(_ee_addr_rs485_addr, _rs485_addr); //RS485 Address
 	
 	//voltage calibration
@@ -231,6 +310,8 @@ void A2D_Eload::_init_from_eeprom()
 	//current calibration
 	EEPROM.get(_ee_addr_i_off, _i_offset);
 	EEPROM.get(_ee_addr_i_scale, _i_scaling);
+
+	//Serial.println("_init_from_eeprom complete");
 }
 
 void A2D_Eload::set_rs485_addr(uint8_t rs485_addr)
@@ -250,14 +331,22 @@ uint8_t A2D_Eload::get_rs485_addr()
 
 void A2D_Eload::set_relay(bool state)
 {
+	set_current_target(0);
 	if(state)
 	{
 		digitalWrite(A2D_ELOAD_RELAY_PIN, A2D_ELOAD_RELAY_ON);
+		_relay_state = true;
 	}
 	else
 	{
 		digitalWrite(A2D_ELOAD_RELAY_PIN, A2D_ELOAD_RELAY_OFF);
+		_relay_state = false;
 	}
+}
+
+bool A2D_Eload::get_relay()
+{
+	return _relay_state;
 }
 
 void A2D_Eload::set_fan(bool state)
@@ -265,13 +354,21 @@ void A2D_Eload::set_fan(bool state)
 	if(state)
 	{
 		digitalWrite(A2D_ELOAD_FAN_PIN, A2D_ELOAD_FAN_ON);
+		_fan_state = true;
 	}
 	else
 	{
 		digitalWrite(A2D_ELOAD_FAN_PIN, A2D_ELOAD_FAN_OFF);
+		_fan_state = false;
 	}
 }
 
+bool A2D_Eload::get_fan()
+{
+	return _fan_state;
+}
+
+/*
 void A2D_Eload::set_fan_speed(float speed)
 {
 	//speed is 0-1.
@@ -281,17 +378,25 @@ void A2D_Eload::set_fan_speed(float speed)
 		analogWrite(A2D_ELOAD_FAN_PIN, uint8_t(speed*255));
 	}
 }
+*/
 
 void A2D_Eload::set_led(bool state)
 {
 	if(state)
 	{
 		digitalWrite(A2D_ELOAD_LED_PIN, A2D_ELOAD_LED_ON);
+		_led_state = true;
 	}
 	else
 	{
 		digitalWrite(A2D_ELOAD_LED_PIN, A2D_ELOAD_LED_OFF);
+		_led_state = false;
 	}
+}
+
+bool A2D_Eload::get_led()
+{
+	return _led_state;
 }
 
 float A2D_Eload::_convert_adc_voltage_to_voltage(float voltage)
