@@ -10,7 +10,9 @@
 A2D_Eload::A2D_Eload()
 {	
 	_dac_i2c_addr = A2D_ELOAD_DAC_I2C_ADDR;
-	
+	_relay_state = false;
+
+
 	//EEPROM Addresses
 	//TODO - these could all be constants/defines instead of int
 	_ee_addr_initialized = 0;
@@ -72,11 +74,11 @@ void A2D_Eload::reset()
 {
 	//Serial.println("reset");
 
+	set_relay(false);
 	set_led(false);
 	set_rs485_receive(true);
 	set_fan(false);
-	set_relay(false);
-
+	
 	_24v_supply_state = false;
 	_reset_dac();
 	
@@ -97,9 +99,10 @@ float A2D_Eload::measure_voltage()
 bool A2D_Eload::check_24v_supply()
 {
 	float voltage = measure_voltage();
-	if(voltage <= A2D_ELOAD_24V_MAX_V && voltage >= A2D_ELOAD_24V_MIN_V)
+	//Serial.println(voltage);
+	if((voltage <= A2D_ELOAD_24V_MAX_V) && (voltage >= A2D_ELOAD_24V_MIN_V))
 	{
-		if(!_24v_supply_state)
+		if(!_24v_supply_state) //if 24v supply just became available
 		{
 			//need to reset and initialize the DAC
 			_init_dac();
@@ -108,8 +111,15 @@ bool A2D_Eload::check_24v_supply()
 		_24v_supply_state = true;
 		return true;
 	}
-	else
+	else //voltage not within range
 	{
+		if(_24v_supply_state) //if 24v supply just turned off
+		{
+			//Serial.println("Check_24V_Supply");
+			set_relay(false); //also sets output to 0
+			set_fan(false);
+			//Maybe do a full reset here? - would also reinitialize from EEPROM.
+		}
 		_24v_supply_state = false;
 		return false;
 	}
@@ -227,6 +237,10 @@ void A2D_Eload::set_current_target(float current)
 
 float A2D_Eload::get_current_target()
 {
+	if(!_24v_supply_state)
+	{
+		return 0.0;
+	}
 	return _convert_voltage_to_current_target(get_dac_voltage());
 }
 
@@ -332,7 +346,7 @@ uint8_t A2D_Eload::get_rs485_addr()
 void A2D_Eload::set_relay(bool state)
 {
 	set_current_target(0);
-	if(state)
+	if(state && _24v_supply_state) //must have 24V supply to turn the relay on
 	{
 		digitalWrite(A2D_ELOAD_RELAY_PIN, A2D_ELOAD_RELAY_ON);
 		_relay_state = true;
@@ -351,7 +365,7 @@ bool A2D_Eload::get_relay()
 
 void A2D_Eload::set_fan(bool state)
 {
-	if(state)
+	if(state && _24v_supply_state) //must have 24V supply to turn the fan on
 	{
 		digitalWrite(A2D_ELOAD_FAN_PIN, A2D_ELOAD_FAN_ON);
 		_fan_state = true;

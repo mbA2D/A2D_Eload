@@ -47,6 +47,7 @@ void scpi_handler_send_1_bool(void (A2D_Eload::*func_to_call)(bool));
 void scpi_handler_read_1_bool(bool (A2D_Eload::*func_to_call)());
 void scpi_handler_read_1_float_ch(float (A2D_Eload::*func_to_call)());
 void scpi_handler_read_2_float_ch(float (A2D_Eload::*func_to_call_1)(), float (A2D_Eload::*func_to_call_2)());
+void scpi_handler_no_func_ch();
 void scpi_handler_no_arg_no_return_ch(void (A2D_Eload::*func_to_call)());
 void scpi_handler_send_4_float(void (A2D_Eload::*func_to_call)(float, float, float, float));
 
@@ -70,6 +71,7 @@ bool g_a2d_is_query;
 char ser_buf[SER_BUF_LEN];
 uint8_t g_a2d_rs485_address;
 unsigned long g_a2d_last_command_time;
+unsigned long g_a2d_old_last_command_time;
 unsigned long g_a2d_last_control_time;
 
 void setup()
@@ -123,7 +125,12 @@ void loop()
 		parse_command(ser_buf, command, false);
 
 		g_a2d_cmd_source = A2D_ELOAD_CMD_SOURCE_USB;
-		g_a2d_last_command_time = millis(); //TODO - only set this if the command is for this channel
+
+		//If after processing the command, it is not for this device, then
+		//g_a2d_last_command_time gets reset to the old time in pass_cmd_to_rs485()
+		//before the time is checked against the watchdog at the end of void loop()
+		g_a2d_old_last_command_time = g_a2d_last_command_time;
+		g_a2d_last_command_time = millis();
 
 		// TODO - put the RS485 command processing here - reduces functions calls in SCPI handler functions
 		//      - if its not on this device, then just pass it on and wait for the response
@@ -171,7 +178,7 @@ void loop()
 #endif
 
 			g_a2d_cmd_source = A2D_ELOAD_CMD_SOURCE_RS485;
-			g_a2d_last_command_time = millis();
+			g_a2d_last_command_time = millis(); //this is for this device, over RS485.
 		}
 		//else
 		//{ // if address is not for this device, don't do anything
@@ -242,6 +249,12 @@ void loop()
 			scpi_handler_send_1_bool(&A2D_Eload::set_relay);
 			//scpi_handler_instr_relay();
 		}
+	}
+
+	// MEAS:VOLT CH?
+	else if (CMDIS(command, "INSTR:KICK"))
+	{
+		scpi_handler_no_func_ch();
 	}
 
 	// MEAS:VOLT CH?
@@ -369,7 +382,7 @@ void loop()
 
 
 	//////////////////////////////// CHECK CONTROL
-	if((millis() - g_a2d_last_control_time) > A2D_ELOAD_CONTROL_S)
+	if(((millis() - g_a2d_last_control_time)/1000.0) > A2D_ELOAD_CONTROL_S)
 	{
 		g_a2d_last_control_time = millis();
 
@@ -399,6 +412,7 @@ void fan_temp_control()
 
 	if(eload_temp > A2D_ELOAD_MAX_TEMP_C)
 	{
+		//Serial.println("Max Temp Tripped");
 		g_a2d_eload.set_relay(false);
 	}
 }
@@ -407,18 +421,15 @@ void output_watchdog()
 {
 	if(g_a2d_eload.get_relay() && ((millis() - g_a2d_last_command_time)/1000.0 > A2D_ELOAD_WATCHDOG_TIMEOUT_S))
 	{
+		//Serial.println("Output Watchdog Tripped");
 		g_a2d_eload.set_relay(false);
 	}
 }
 
 void output_24v_test()
 {
-	bool ext_supply_state = g_a2d_eload.check_24v_supply(); //must be called often to initialize DAC when available
-	//if output is on, turn it off if there is no 24V supply
-	if(g_a2d_eload.get_relay() && (!ext_supply_state))
-	{
-		g_a2d_eload.set_relay(false);
-	}
+	g_a2d_eload.check_24v_supply(); //must be called often to initialize DAC when available
+	//if output is on, it will be turned off by the check_24v_supply() function if there is no 24V supply
 }
 
 //////////////////////////////////// GENERIC SCPI HANDLERS
@@ -470,6 +481,20 @@ void scpi_handler_read_1_float_ch(float (A2D_Eload::*func_to_call)())
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
 		wait_rs485_response_send_usb(ser_buf);
+	}
+}
+
+void scpi_handler_no_func_ch()
+{
+	uint8_t ch = parse_channel();
+	if (ch >= 1 && ch <= A2D_ELOAD_NUM_CHANNELS)
+	{
+		;//do nothing - this command exists to kick the watchdog.
+	}
+	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	{
+		// if this is a base device, send command up over RS485.
+		pass_cmd_to_rs485(calc_rs485_address(ch));
 	}
 }
 
@@ -701,19 +726,6 @@ void parse_command(char ser_buf[], char command[], bool from_rs485)
 		// returns the rs485 address sent (first part of the serial buffer).
 		// if the address is 0, then command will hold what should be printed to USB.
 
-		// command format is exactly the same as the USB-based commands, but has the RS485 address at the start.
-		// ex: "<ADDR> MEAS:VOLT <CH>?"
-		// where <ADDR> is the device at a particular RS485 address
-		// and <CH> is the channel in the associated chain.
-		//<CH> can be from 0 to 32*A2D_4CH_ISO_ADC_NUM_CHANNELS (0 to 128)
-
-		// the base device could receive a command for a specific channel.
-		// channels 0 to 4 are base device only (RS485 address 0).
-		// channels 5 to 8 correspond to the device with RS485 address 1.
-		//  A device with RS485 address of X has the channels
-		//          (X+1) * A2D_4CH_ISO_ADC_NUM_CHANNELS + 1
-		//          to
-		//          (X+1) * A2D_4CH_ISO_ADC_NUM_CHANNELS + A2D_4CH_ISO_ADC_NUM_CHANNELS
 		token = strtok(ser_buf, delimeters_address_command);
 		g_a2d_rs485_address = uint8_t(atoi(token));
 		token = strtok(NULL, delimeters_address_command);
@@ -728,6 +740,7 @@ void parse_command(char ser_buf[], char command[], bool from_rs485)
 
 void pass_cmd_to_rs485(uint8_t rs485_addr)
 {
+	g_a2d_last_command_time = g_a2d_old_last_command_time;
 	g_a2d_eload.set_rs485_receive(false);
 	Serial3.print(rs485_addr); // rs485 address
 	Serial3.print(" ");

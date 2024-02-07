@@ -39,9 +39,8 @@
 //scaling
 #define A2D_ELOAD_DEFAULT_V_SCALING     11.0 // (1k + 10k)/1k
 #define A2D_ELOAD_DEFAULT_V_OFFSET	    0.0
-#define A2D_ELOAD_24V_MIN_V             20
-#define A2D_ELOAD_24V_MAX_V             26
-
+#define A2D_ELOAD_24V_MIN_V             20.0
+#define A2D_ELOAD_24V_MAX_V             26.0
 
 #define A2D_ELOAD_DEFAULT_I_SCALING     2.0 //2.5V ref gives 5A output 1/(10mOhm * 50V/V Amp)
 #define A2D_ELOAD_DEFAULT_I_OFFSET      0.0
@@ -53,7 +52,7 @@
 #define A2D_ELOAD_DEFAULT_TEMP_SHC      0.7926382169e-7
 
 //Control constants
-#define A2D_ELOAD_FAN_TEMP_C            35.0
+#define A2D_ELOAD_FAN_TEMP_C            40.0
 #define A2D_ELOAD_FAN_TEMP_HYST         2.0
 #define A2D_ELOAD_MAX_TEMP_C            80.0
 #define A2D_ELOAD_WATCHDOG_TIMEOUT_S    10.0
