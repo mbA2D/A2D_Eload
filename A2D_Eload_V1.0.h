@@ -42,7 +42,7 @@
 #define A2D_ELOAD_24V_MIN_V             20.0
 #define A2D_ELOAD_24V_MAX_V             26.0
 
-#define A2D_ELOAD_DEFAULT_I_SCALING     2.0 //2.5V ref gives 5A output 1/(10mOhm * 50V/V Amp)
+#define A2D_ELOAD_DEFAULT_I_SCALING     4.0 //2.5V ref gives 10A output 1/(5mOhm * 50V/V Amp)
 #define A2D_ELOAD_DEFAULT_I_OFFSET      0.0
 #define A2D_ELOAD_MAX_CURRENT           5.0 //Amps
 

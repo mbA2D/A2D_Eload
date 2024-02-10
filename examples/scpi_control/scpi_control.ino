@@ -6,6 +6,11 @@ PURPOSE: This example implements some SCPI commands
 		to communicate with the A2D Eload board.
 */
 
+//TODO - an extra UART used for debugging would be nice
+//TODO - add in SCPI error queries - if the device is overtemp, bad command, bad parsing, etc.
+//TODO - would be nice to move to different IDE without preprocessor bugs
+//TODO - a delay 1s or more is needed between a reset command a sending the current for the current to take effect - figure out why.
+
 #include <A2D_Eload.h>
 
 #define SERIAL F("0001") //There seems to be a bug with Arduino IDE #ifdef, #ifndef, etc. need to hard-code the serial number
