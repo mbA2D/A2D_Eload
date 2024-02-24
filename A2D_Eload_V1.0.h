@@ -44,7 +44,7 @@
 
 #define A2D_ELOAD_DEFAULT_I_SCALING     4.0 //2.5V ref gives 10A output 1/(5mOhm * 50V/V Amp)
 #define A2D_ELOAD_DEFAULT_I_OFFSET      0.0
-#define A2D_ELOAD_MAX_CURRENT           5.0 //Amps
+#define A2D_ELOAD_MAX_CURRENT           10.0 //Amps
 
 //default Steinhart-Hart Constants for NXRT15XV103FA1B
 #define A2D_ELOAD_DEFAULT_TEMP_SHA      1.119349044e-3
