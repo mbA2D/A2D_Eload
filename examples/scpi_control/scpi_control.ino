@@ -28,7 +28,7 @@ PURPOSE: This example implements some SCPI commands
 #define NO_CMD ""
 
 // RS485 Settings
-#define RS485_BAUDRATE 57600
+#define RS485_BAUDRATE 115200
 
 // Macro for finding commands - PSTR to store string in PROGMEM(flash) instead of memory
 #define CMDIS(i, c) (!strcmp_P(i, PSTR(c)))
@@ -79,6 +79,8 @@ HardwareSerial Serial3(PB11, PB10); // RX, TX - for RS485
 uint8_t g_a2d_cmd_source;
 bool g_a2d_is_query;
 char ser_buf[SER_BUF_LEN];
+char ser_buf_copy[SER_BUF_LEN];
+uint8_t g_a2d_chars_input = 0;
 uint8_t g_a2d_rs485_address;
 unsigned long g_a2d_last_command_time;
 unsigned long g_a2d_old_last_command_time;
@@ -108,17 +110,17 @@ void loop()
 
 	// Allocate memory for the serial buffer
 	char command[CMD_BUF_LEN];
-	uint8_t chars_input = 0;
+	g_a2d_chars_input = 0;
 
 	// If the command is not for this device, then we need to send it to the correct one (RS485 Address)
 	// Then wait for a response (with timeout if the device does not respond).
 	// RS485 address needs to be stored in EEPROM (DONE)
 	// Address of 0 is reserved for the base device (the one connected with USB)
-	// Commands with '0' as the channel will only return the 4 channels of the base device.
+	// Commands with '0' as the channel parameter will only return the 4 channels of the base device.
 
 	// TODO - add a CRC check to RS485 communication.
+	// TODO - add device errors like parsing errors for SCPI commands, or RS485 timeout, etc.
 	// The same firmware should be uploaded to the base device as any others.
-	// If channel is greater than A2D_XXNUM_CHANNELS, then use [CH - 4*RS485_ADDR] as the address.
 
 	////////////////////////////////////// CHECK NEW COMMANDS
 
@@ -130,8 +132,9 @@ void loop()
 #endif
 
 		// Read until a full command is received
-		chars_input = Serial.readBytesUntil(END_CHAR, ser_buf, SER_BUF_LEN);
-		ser_buf[chars_input] = '\0'; // terminate the input string with NULL to work with strtok
+		g_a2d_chars_input = Serial.readBytesUntil(END_CHAR, ser_buf, SER_BUF_LEN);
+		ser_buf[g_a2d_chars_input] = '\0'; // terminate the input string with NULL to work with strtok
+		strcpy(ser_buf_copy, ser_buf);
 		parse_command(ser_buf, command, false);
 
 		g_a2d_cmd_source = A2D_ELOAD_CMD_SOURCE_USB;
@@ -153,24 +156,25 @@ void loop()
 		Serial.println(F("RS485 Available"));
 #endif
 
-		chars_input = Serial3.readBytesUntil(END_CHAR, ser_buf, SER_BUF_LEN);
+		g_a2d_chars_input = Serial3.readBytesUntil(END_CHAR, ser_buf, SER_BUF_LEN);
 
 #ifdef DEBUG
 		Serial.print(F("Chars read: "));
-		Serial.println(chars_input);
+		Serial.println(g_a2d_chars_input);
 #endif
 
-		ser_buf[chars_input] = '\0'; // terminate the input string with NULL to work with strtok
+		ser_buf[g_a2d_chars_input] = '\0'; // terminate the input string with NULL to work with strtok
 
 #ifdef DEBUG
-		Serial.println(ser_buf);
+		Serial.write(ser_buf, g_a2d_chars_input);
+		Serial.println("");
 #endif
 
 		// if from RS485, this could be a response a device or a command to a device.
-		// Command out from base: rs485_addr is 1 to 32
-		// Command response to base: rs485_addr is 0
+		// Command out from base: rs485_addr is 1 to 31
 
 		// if addr is 0 and this is the base device, then send the rest of the response out over USB.
+		strcpy(ser_buf_copy, ser_buf);
 		parse_command(ser_buf, command, true);
 
 #ifdef DEBUG
@@ -190,10 +194,11 @@ void loop()
 			g_a2d_cmd_source = A2D_ELOAD_CMD_SOURCE_RS485;
 			g_a2d_last_command_time = millis(); //this is for this device, over RS485.
 		}
-		//else
-		//{ // if address is not for this device, don't do anything
-		//	strcpy(command, "NOCMD");
-		//}
+		
+		else
+		{ // if address is not for this device, don't do anything
+			strcpy(command, NO_CMD);
+		}
 	}
 
 	// if no new commands from RS485 or USB
@@ -440,7 +445,7 @@ void scpi_handler_send_1_bool_ch(void (A2D_Eload::*func_to_call)(bool))
 	{
 		(g_a2d_eload.*func_to_call)(parse_bool());
 	}
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -474,8 +479,8 @@ void scpi_handler_read_1_bool_ch(bool (A2D_Eload::*func_to_call)())
 		}
 	}
 
-	// channel is not 0, and channel is not on this device, and this is a base device.
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	// channel is not on this device, and this is a base device, and command received from USB
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -505,7 +510,7 @@ void scpi_handler_read_1_float_ch(float (A2D_Eload::*func_to_call)())
 	}
 
 	// channel is not 0, and channel is not on this device, and this is a base device.
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -520,7 +525,7 @@ void scpi_handler_no_func_ch()
 	{
 		;//do nothing - this command exists to kick the watchdog.
 	}
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -534,7 +539,7 @@ void scpi_handler_no_arg_no_return_ch(void (A2D_Eload::*func_to_call)())
 	{
 		(g_a2d_eload.*func_to_call)();
 	}
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -563,7 +568,7 @@ void scpi_handler_read_2_float_ch(float (A2D_Eload::*func_to_call_1)(), float (A
 			g_a2d_eload.set_rs485_receive(true);
 		}
 	}
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -585,7 +590,7 @@ void scpi_handler_send_4_float_ch(void (A2D_Eload::*func_to_call)(float, float, 
 		}
 		(g_a2d_eload.*func_to_call)(float_arr[0], float_arr[1], float_arr[2], float_arr[3]);
 	}
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -600,7 +605,7 @@ void scpi_handler_send_1_float_ch(void (A2D_Eload::*func_to_call)(float))
 		float curr_target = parse_float();
 		(g_a2d_eload.*func_to_call)(curr_target);
 	}
-	else if (g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR && g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB)
+	else if ((g_a2d_eload.get_rs485_addr() == A2D_ELOAD_BASE_RS485_ADDR) && (g_a2d_cmd_source == A2D_ELOAD_CMD_SOURCE_USB))
 	{
 		// if this is a base device, send command up over RS485.
 		pass_cmd_to_rs485(calc_rs485_address(ch));
@@ -713,8 +718,8 @@ float parse_float()
 
 bool channel_on_this_device(uint8_t channel)
 {
-	if ((channel >= (g_a2d_eload.get_rs485_addr()) * A2D_ELOAD_NUM_CHANNELS + 1) &&
-		(channel <= (g_a2d_eload.get_rs485_addr()) * A2D_ELOAD_NUM_CHANNELS + A2D_ELOAD_NUM_CHANNELS))
+	if ((channel >= (g_a2d_eload.get_rs485_addr() * A2D_ELOAD_NUM_CHANNELS + 1)) &&
+		(channel <= (g_a2d_eload.get_rs485_addr() * A2D_ELOAD_NUM_CHANNELS + A2D_ELOAD_NUM_CHANNELS)))
 	{
 		return true;
 	}
@@ -751,14 +756,24 @@ void parse_command(char ser_buf[], char command[], bool from_rs485)
 	if (from_rs485)
 	{
 		// parses commands from the RS485 port (chained devices)
+		// rs485 data commands will either have the format:
+		//   1:  "<RS485_ADDR> <COMMAND> <PARAMETERS>" from base device to other devices (ADDR will never be 0)
+		//   2:  "<COMMAND_RESPONSE>" from other devices to base (no spaces or '?')
+		// if atoi() fails to find a valid integer, it returns 0.
+		//     this could happen in case 2: where the response is a float or other type.
+		//     the command will then contain an invalid command and NOCMD will be parsed.
 
-		// returns the rs485 address sent (first part of the serial buffer).
-		// if the address is 0, then command will hold what should be printed to USB.
-
-		token = strtok(ser_buf, delimeters_address_command);
-		g_a2d_rs485_address = uint8_t(atoi(token));
-		token = strtok(NULL, delimeters_address_command);
-		strcpy(command, token);
+		if (strchr(ser_buf, ' ') != NULL) //Case 1: from base
+		{
+			token = strtok(ser_buf, delimeters_address_command);
+			g_a2d_rs485_address = uint8_t(atoi(token));
+			token = strtok(NULL, delimeters_address_command);
+			strcpy(command, token);
+		}
+		else //Case 2: to base (base waits in wait_rs485_response_send_usb())
+		{
+			strcpy(command, NO_CMD);
+		}
 	}
 	else
 	{ // from USB
@@ -773,7 +788,7 @@ void pass_cmd_to_rs485(uint8_t rs485_addr)
 	g_a2d_eload.set_rs485_receive(false);
 	Serial3.print(rs485_addr); // rs485 address
 	Serial3.print(" ");
-	Serial3.print(ser_buf);
+	Serial3.print(ser_buf_copy);
 	Serial3.flush();
 	g_a2d_eload.set_rs485_receive(true);
 
@@ -781,7 +796,7 @@ void pass_cmd_to_rs485(uint8_t rs485_addr)
 	Serial.print(F("Printed over RS485: "));
 	Serial.print(rs485_addr); // destination rs485 address
 	Serial.print(" ");
-	Serial3.print(ser_buf);
+	Serial3.print(ser_buf_copy);
 	Serial.flush();
 #endif
 }
