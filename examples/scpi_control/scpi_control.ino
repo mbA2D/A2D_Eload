@@ -263,7 +263,7 @@ void loop()
 		}
 	}
 
-	// MEAS:VOLT CH?
+	// INSTR:KICK CH
 	else if (CMDIS(command, "INSTR:KICK"))
 	{
 		scpi_handler_no_func_ch();
